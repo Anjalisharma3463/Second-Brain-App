@@ -13,125 +13,113 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = __importDefault(require("express"));
+const utils_1 = require("./utils");
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
-const dotenv_1 = __importDefault(require("dotenv"));
+const Links_1 = require("./Model/Links");
 const User_1 = require("./Model/User");
-const db_1 = __importDefault(require("./config/db"));
-const UserMiddleware_1 = require("./middleware/UserMiddleware");
 const Content_1 = require("./Model/Content");
+const UserMiddleware_1 = require("./middleware/UserMiddleware");
+const cors_1 = __importDefault(require("cors"));
+const zod_1 = require("zod");
+const bcrypt_1 = __importDefault(require("bcrypt"));
+const dotenv_1 = __importDefault(require("dotenv"));
+const Validate_1 = require("./middleware/Validate");
 dotenv_1.default.config();
-(0, db_1.default)();
+const db_1 = __importDefault(require("./config/db"));
 const app = (0, express_1.default)();
 app.use(express_1.default.json());
-app.post("/api/v1/signup", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    //need to add zod and hash password
-    try {
-        const username = req.body.username;
-        const password = req.body.password;
-        const email = req.body.email;
-        yield User_1.UserModel.create({
-            username: username,
-            password: password,
-            email: email
-        });
-        res.json({
-            message: "User signed up successfully"
-        });
-    }
-    catch (e) {
-        res.status(411).json({
-            message: "user already exists"
-        });
-    }
-}));
-app.post("/api/v1/signin", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    try {
-        const username = req.body.username;
-        const password = req.body.password;
-        const user = yield User_1.UserModel.findOne({ username: username, password: password });
-        if (!user) {
-            throw new Error("User not found");
-        }
-        if (!process.env.JWT_SECRET) {
-            throw new Error("JWT_SECRET is not defined in environment variables");
-        }
-        const token = jsonwebtoken_1.default.sign({ id: user._id }, process.env.JWT_SECRET);
-        res.json({
-            message: "User signed in successfully",
-            token: token
-        });
-    }
-    catch (e) {
-        res.status(401).json({
-            message: " User not found"
-        });
-    }
-}));
-app.post("/api/v1/content", UserMiddleware_1.UserMiddleware, (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    const { link, type } = req.body;
-    try {
-        // @ts-ignore
-        console.log("Received userId in route:", req.userId);
-        // @ts-ignore
-        console.log("Inserting Data:", { link, type, userId: req.userId });
-        const newContent = yield Content_1.ContentModel.create({
-            link,
-            type,
-            tags: [],
-            //@ts-ignore
-            userId: req.userId,
-        });
-        console.log("Inserted Content:", newContent);
-        res.json({ message: "Content Added!" });
-    }
-    catch (error) {
-        console.error("Error while adding content:", error);
-        res.status(500).json({ message: "Content not added due to server error" });
-    }
-}));
-app.get("/api/v1/content", UserMiddleware_1.UserMiddleware, (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    try {
-        // @ts-ignore
-        const contentId = req.body.contentId;
-        console.log("contentId:", contentId);
-        const content = yield Content_1.ContentModel.find({
-            contentId
-        }).populate("userId", "username");
-        console.log("content:", content);
-        res.json({
-            content: content
-        });
-    }
-    catch (e) {
-        res.status(401).json({
-            message: "content not found"
-        });
-    }
-}));
-app.delete("/api/v1/content", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    try {
-        const contentId = req.body.contentId;
-        yield Content_1.ContentModel.deleteOne({
-            _id: contentId,
-            //@ts-ignore
-            userId: req.userId
-        });
-        res.json({
-            message: "content deleted"
-        });
-    }
-    catch (e) {
-        res.status(401).json({
-            message: "content not deleted"
-        });
-    }
-}));
-app.post("/api/v1/brain/share", (req, res) => {
+app.use((0, cors_1.default)());
+(0, db_1.default)();
+const signupSchema = zod_1.z.object({
+    username: zod_1.z.string().min(3, "Username must be at least 3 characters long"),
+    password: zod_1.z.string().min(6, "Password must be at least 6 characters long"),
+    email: zod_1.z.string().email("Invalid email format"),
 });
-app.get("/api/v1/brain/:shareLink", (req, res) => {
+const signinSchema = zod_1.z.object({
+    username: zod_1.z.string(),
+    password: zod_1.z.string(),
 });
-console.log("PORT:", process.env.PORT);
-console.log("Database URL:", process.env.DATABASE_URL);
-app.listen(process.env.PORT, () => {
-    console.log("Server is running on port", process.env.PORT);
+const contentSchema = zod_1.z.object({
+    link: zod_1.z.string().url("Invalid URL format"),
+    type: zod_1.z.string(),
+    title: zod_1.z.string().optional(),
+});
+const deleteContentSchema = zod_1.z.object({
+    contentId: zod_1.z.string(),
+});
+const shareBrainSchema = zod_1.z.object({
+    share: zod_1.z.boolean(),
+});
+app.post("/api/v1/signup", (0, Validate_1.validate)(signupSchema), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const { username, password, email } = req.body;
+    const hashedPassword = yield bcrypt_1.default.hash(password, 10);
+    try {
+        yield User_1.UserModel.create({ username, password: hashedPassword, email });
+        res.json({ message: "User signed up" });
+    }
+    catch (e) {
+        res.status(411).json({ message: "User already exists" });
+    }
+}));
+app.post("/api/v1/signin", (0, Validate_1.validate)(signinSchema), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const { username, password } = req.body;
+    const existingUser = yield User_1.UserModel.findOne({ username });
+    if (existingUser) {
+        const isPasswordValid = yield bcrypt_1.default.compare(password, existingUser.password);
+        if (!isPasswordValid) {
+            res.status(403).json({ message: "Incorrect credentials" });
+            return;
+        }
+        const token = jsonwebtoken_1.default.sign({ id: existingUser._id }, process.env.JWT_SECRET);
+        res.json({ token });
+    }
+    else {
+        res.status(403).json({ message: "Wrong credentials" });
+    }
+}));
+app.post("/api/v1/content", UserMiddleware_1.userMiddleware, (0, Validate_1.validate)(contentSchema), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const { link, type, title } = req.body;
+    yield Content_1.ContentModel.create({ link, type, title, userId: req.userId, tags: [] });
+    res.json({ message: "Content added" });
+}));
+app.delete("/api/v1/content", UserMiddleware_1.userMiddleware, (0, Validate_1.validate)(deleteContentSchema), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const { contentId } = req.body;
+    yield Content_1.ContentModel.deleteMany({ _id: contentId, userId: req.userId });
+    res.json({ message: "Deleted" });
+}));
+app.post("/api/v1/brain/share", UserMiddleware_1.userMiddleware, (0, Validate_1.validate)(shareBrainSchema), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const { share } = req.body;
+    if (share) {
+        const existingLink = yield Links_1.LinkModel.findOne({ userId: req.userId });
+        if (existingLink) {
+            res.json({ hash: existingLink.hash });
+            return;
+        }
+        const hash = (0, utils_1.random)(10);
+        yield Links_1.LinkModel.create({ userId: req.userId, hash });
+        res.json({ hash });
+    }
+    else {
+        yield Links_1.LinkModel.deleteOne({ userId: req.userId });
+        res.json({ message: "Removed link" });
+    }
+}));
+app.get("/api/v1/brain/:shareLink", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const hash = req.params.shareLink;
+    const link = yield Links_1.LinkModel.findOne({ hash });
+    if (!link) {
+        res.status(411).json({ message: "Sorry, incorrect input" });
+        return;
+    }
+    const content = yield Content_1.ContentModel.find({ userId: link.userId });
+    const user = yield User_1.UserModel.findById(link.userId);
+    if (!user) {
+        res.status(411).json({ message: "User not found !" });
+        return;
+    }
+    res.json({ username: user.username, content });
+}));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
 });

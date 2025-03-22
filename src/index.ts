@@ -1,155 +1,144 @@
-import express from "express";
-import mongoose from "mongoose"; 
+import express, { Request, Response, NextFunction } from "express";
+import { random } from "./utils";
 import jwt from "jsonwebtoken";
-import dotenv from "dotenv";
+import { LinkModel } from "./Model/Links";
 import { UserModel } from "./Model/User";
-import connectDB from "./config/db";
-import { UserMiddleware } from "./middleware/UserMiddleware";
 import { ContentModel } from "./Model/Content";
+import { userMiddleware } from "./middleware/UserMiddleware";
+import cors from "cors";
+import { z } from "zod";
+import bcrypt from "bcrypt";
+import dotenv from "dotenv"; 
+import { validate } from "./middleware/Validate";
+dotenv.config(); 
+import connectDB from "./config/db";
 
-
- dotenv.config(); 
- connectDB();
- const app = express();
+const app = express();
 app.use(express.json());
+app.use(cors());
+connectDB();
 
+const signupSchema = z.object({
+    username: z.string().min(3, "Username must be at least 3 characters long"),
+    password: z.string().min(6, "Password must be at least 6 characters long"),
+    email: z.string().email("Invalid email format"),
+});
 
-app.post("/api/v1/signup", async (req, res)=> {
-    //need to add zod and hash password
-    try {
-    const username = req.body.username;
-    const password = req.body.password;
-    const email = req.body.email;
-    await UserModel.create({
-        username: username,
-        password: password,
-        email: email
-    })
+const signinSchema = z.object({
+    username: z.string(),
+    password: z.string(),
+});
 
-    res.json({
-        message: "User signed up successfully"
-    })   
-} catch (e) {
-    res.status(411).json({
-        message:  "user already exists"
-    })
-}   
+const contentSchema = z.object({
+    link: z.string().url("Invalid URL format"),
+    type: z.string(),
+    title: z.string().optional(),
+});
+
+const deleteContentSchema = z.object({
+    contentId: z.string(),
+});
+
+const shareBrainSchema = z.object({
+    share: z.boolean(),
+});
  
-});
+app.post("/api/v1/signup", validate(signupSchema), async (req: Request, res: Response) => {
+    const { username, password, email } = req.body;
 
-app.post("/api/v1/signin", async(req, res)=> {
+    const hashedPassword = await bcrypt.hash(password, 10);
+    
     try {
-        const username = req.body.username;
-        const password = req.body.password;
-        const user = await UserModel.findOne({username: username, password: password});
-        if (!user) {
-            throw new Error("User not found");
-        }
-        if (!process.env.JWT_SECRET) {
-            throw new Error("JWT_SECRET is not defined in environment variables");
-        }
-        const token = jwt.sign({id: user._id}, process.env.JWT_SECRET);
+        await UserModel.create({ username, password: hashedPassword, email });
 
-        res.json({
-            message: "User signed in successfully",
-            token: token
-        })
-    }catch(e) {
-        res.status(401).json({
-            message:" User not found"
-        })
+        res.json({ message: "User signed up" });
+       
+    } catch (e) {
+        res.status(411).json({ message: "User already exists" });
     }
 });
-
-app.post("/api/v1/content", UserMiddleware, async (req, res) => {
-    const { link, type } = req.body;
-
-    try {
-        // @ts-ignore
-        console.log("Received userId in route:", req.userId);
-        // @ts-ignore
-        console.log("Inserting Data:", { link, type, userId: req.userId });
-
-        const newContent = await ContentModel.create({
-            link,
-            type,
-            tags: [],
-            //@ts-ignore
-            userId: req.userId,
-        });
-
-        console.log("Inserted Content:", newContent);
-
-        res.json({ message: "Content Added!" });
-    } catch (error) {
-        console.error("Error while adding content:", error);
-        res.status(500).json({ message: "Content not added due to server error" });
-    }
-});
-
  
-app.get("/api/v1/content", UserMiddleware, async (req, res) => {
-    try {
-         const contentId = req.query.contentId as string;
-        console.log("contentId:", contentId);
-        //@ts-ignore
-        const userId = req.userId;     
-        if (!contentId) {
-            res.status(400).json({ message: "contentId is required" });
-            return;
+app.post("/api/v1/signin", validate(signinSchema), async (req: Request, res: Response) => {
+    const { username, password } = req.body;
+    
+    const existingUser = await UserModel.findOne({ username });
+
+    if (existingUser) {
+        const isPasswordValid = await bcrypt.compare(password, existingUser.password);
+        if (!isPasswordValid) {
+             res.status(403).json({ message: "Incorrect credentials" });
+             return;
         }
 
-        const content = await ContentModel.findOne({ _id: contentId , userId:userId }).populate("userId", "username");
-        console.log("content:", content);
-
-        if (!content) {
-            res.status(404).json({ message: "Content not found" });
-            return;
-        }
-
-        res.json({ content });
-    } catch (e) {
-        console.error("Error fetching content:", e);
-        res.status(500).json({ message: "Internal server error" });
+        const token = jwt.sign({ id: existingUser._id }, process.env.JWT_SECRET as string);
+        
+        res.json({ token });
+    } else {
+        res.status(403).json({ message: "Wrong credentials" });
     }
 });
 
+app.post("/api/v1/content", userMiddleware, validate(contentSchema), async (req: Request, res: Response) => {
+    const { link, type, title } = req.body;
 
-app.delete("/api/v1/content", async(req, res)=> {
-  
-    try {
-        const contentId = req.query.contentId;
-        await ContentModel.deleteOne({
-            _id: contentId,
-            //@ts-ignore
-            userId: req.userId
-        });
-        res.json({
-            message: "content deleted"
-        });
-    } catch (e) {
-        res.status(401).json({
-            message: "content not deleted"
-        })
+    await ContentModel.create({ link, type, title, userId: req.userId, tags: [] });
+
+    res.json({ message: "Content added" });
+});
+
+app.delete("/api/v1/content", userMiddleware, validate(deleteContentSchema), async (req: Request, res: Response) => {
+    const { contentId } = req.body;
+
+    await ContentModel.deleteMany({ _id: contentId, userId: req.userId });
+
+    res.json({ message: "Deleted" });
+});
+
+app.post("/api/v1/brain/share", userMiddleware, validate(shareBrainSchema), async (req: Request, res: Response) => {
+    const { share } = req.body;
+
+    if (share) {
+        const existingLink = await LinkModel.findOne({ userId: req.userId });
+
+        if (existingLink) {
+             res.json({ hash: existingLink.hash });
+             return;
+        }
+
+        const hash = random(10);
+        await LinkModel.create({ userId: req.userId, hash });
+
+        res.json({ hash });
+    } else {
+        await LinkModel.deleteOne({ userId: req.userId });
+
+        res.json({ message: "Removed link" });
     }
 });
 
-app.post("/api/v1/brain/share", (req, res)=> {
+app.get("/api/v1/brain/:shareLink", async (req: Request, res: Response) => {
+    const hash = req.params.shareLink;
 
+    const link = await LinkModel.findOne({ hash });
+
+    if (!link) {
+       res.status(411).json({ message: "Sorry, incorrect input" });
+       return
+    }
+
+    const content = await ContentModel.find({ userId: link.userId });
+    const user = await UserModel.findById(link.userId);
+
+    if (!user) {
+        res.status(411).json({ message: "User not found !" });
+        return;
+    }
+
+    res.json({ username: user.username, content });
+});  
+
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
 });
-
-app.get("/api/v1/brain/:shareLink", (req, res)=> {
-
-});
-
-
-console.log("PORT:", process.env.PORT);
-
-console.log("Database URL:", process.env.DATABASE_URL);
-
-app.listen(process.env.PORT, ()=> {
-  console.log("Server is running on port", process.env.PORT);
-});
-
-
-
